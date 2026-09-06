@@ -1,4 +1,4 @@
-# 🎬 Someway's Hub v2.0 - Pro Aspect Ratio MP4 Media Player
+# 🎬 Someway's Hub v2.0 - Pro Aspect Ratio MP4/MKV Media Player
 
 ![Version](https://img.shields.io/badge/Version-2.0.0-emerald.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
