@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Someway's Hub - Aspect Ratio Media Player</title>
+  <meta name="description" content="Someway's Hub - Modern MP4 Media Player with Stremio-style screen aspect ratio stretching and picture controls.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+  <div id="app" class="app-container">
+    <!-- Top Navigation Bar -->
+    <header class="navbar">
+      <div class="nav-brand">
+        <div class="logo-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            <rect x="2" y="2" width="20" height="20" rx="6" stroke-opacity="0.3"></rect>
+          </svg>
+        </div>
+        <span class="brand-title">Someway's <span class="brand-highlight">Hub</span></span>
+        <span class="brand-badge">v2.0 PRO ASPECT PLAYER</span>
+      </div>
+
+      <div class="nav-status" id="video-info-tag">
+        <span class="status-dot"></span>
+        <span id="active-filename">No video loaded</span>
+        <span class="aspect-pill" id="current-aspect-badge">Fit (16:9)</span>
+      </div>
+
+      <div class="nav-actions">
+        <input type="file" id="file-input" accept="video/mp4,video/webm,video/ogg,video/mkv,.mp4,.webm,.mkv" multiple style="display: none;">
+
+        <button id="btn-playlist-header" class="btn btn-icon btn-glass" title="Uploaded Videos Playlist (Clipboard)">
+          📋
+        </button>
+
+        <button id="btn-samples" class="btn btn-glass" title="Load Sample Videos">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
+            <path d="M10 8l6 4-6 4V8z"></path>
+          </svg>
+          <span>Demo Videos</span>
+        </button>
+
+        <button id="btn-toggle-drawer" class="btn btn-icon btn-glass" title="Toggle Aspect & Video Settings Panel">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+
+        <button id="btn-hotkeys" class="btn btn-icon btn-glass" title="Keyboard Shortcuts">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+            <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M8 16h8"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Viewport Area -->
+    <main class="player-stage" id="player-stage">
+      <!-- Ambient Backlight Glow -->
+      <div class="ambient-glow" id="ambient-glow"></div>
+
+      <!-- Drag and Drop Overlay -->
+      <div class="dropzone-overlay" id="dropzone">
+        <div class="dropzone-box">
+          <div class="dropzone-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+          </div>
+          <h3>Drop your MP4 or MKV video file here</h3>
+          <p>Or click to browse from your computer</p>
+        </div>
+      </div>
+
+      <!-- Empty State / Welcome Screen -->
+      <div class="empty-state" id="empty-state">
+        <div class="empty-card">
+          <div class="empty-icon-ring">
+            <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="2" y="2" width="20" height="20" rx="5"></rect>
+              <path d="M10 8l6 4-6 4V8z" fill="currentColor" fill-opacity="0.2"></path>
+            </svg>
+          </div>
+          <h2>Welcome to Someway's Hub</h2>
+          <p>Experience video with complete aspect ratio freedom. Stretch, crop, or match your display perfectly, Stremio-style.</p>
+          <div class="empty-actions">
+            <button id="empty-open-btn" class="btn btn-primary btn-lg">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+              <span>Choose MP4 / MKV File</span>
+            </button>
+            <button id="empty-demo-btn" class="btn btn-secondary btn-lg">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+              </svg>
+              <span>Try Demo Stream</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Screen Aspect Toast Banner -->
+      <div class="aspect-toast" id="aspect-toast">
+        <span class="toast-icon">📐</span>
+        <span id="toast-text">Aspect Ratio: Fit</span>
+      </div>
+
+      <!-- Video Wrapper (Contains Video & Transform Matrix) -->
+      <div class="video-viewport" id="video-viewport">
+        <!-- Video Element (Audio graph visualizer canvas removed as requested) -->
+        <video id="video-player" playsinline></video>
+
+        <!-- Subtitle Render Layer -->
+        <div id="subtitle-overlay" class="subtitle-overlay"></div>
+      </div>
+
+      <!-- Controls Overlay Floating Bar -->
+      <div class="controls-overlay" id="controls-overlay">
+        <!-- Seekbar Row with Timestamps on Both Ends -->
+        <div class="seekbar-row">
+          <span class="time-label" id="time-current">00:00:00</span>
+          <div class="seekbar-container" id="seekbar-container">
+            <div class="seekbar-tooltip" id="seekbar-tooltip">00:00</div>
+            <div class="seekbar-track">
+              <div class="seekbar-buffer" id="seekbar-buffer"></div>
+              <div class="seekbar-fill" id="seekbar-fill"></div>
+              <div class="seekbar-handle" id="seekbar-handle"></div>
+            </div>
+          </div>
+          <span class="time-label" id="time-duration">00:00:00</span>
+        </div>
+
+        <div class="controls-bar">
+          <!-- Left Group: Play/Pause, Skip Next, Volume Icon & Slider -->
+          <div class="controls-left">
+            <button id="btn-rewind" class="icon-btn symbol-btn" title="Rewind 10s (<)">
+              <span class="btn-symbol">&lt;</span>
+            </button>
+
+            <button id="btn-play-pause" class="icon-btn" title="Play/Pause (Space)">
+              <svg id="icon-play" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+              </svg>
+              <svg id="icon-pause" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none;">
+                <rect x="6" y="4" width="4" height="16" rx="1"></rect>
+                <rect x="14" y="4" width="4" height="16" rx="1"></rect>
+              </svg>
+            </button>
+
+            <button id="btn-forward" class="icon-btn symbol-btn" title="Forward 10s (>)">
+              <span class="btn-symbol">&gt;</span>
+            </button>
+
+            <button id="btn-forward-135" class="icon-btn symbol-btn" title="Forward 1:35 / Intro Skip (>>)">
+              <span class="btn-symbol">&gt;&gt;</span>
+            </button>
+
+            <div class="volume-group">
+              <button id="btn-mute" class="icon-btn" title="Mute/Unmute (M)">
+                <svg id="icon-volume-high" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor"></polygon>
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                </svg>
+                <svg id="icon-volume-mute" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor"></polygon>
+                  <line x1="23" y1="9" x2="17" y2="15"></line>
+                  <line x1="17" y1="9" x2="23" y2="15"></line>
+                </svg>
+              </button>
+              <div class="volume-slider-wrapper">
+                <input type="range" id="volume-slider" min="0" max="1" step="0.02" value="1">
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Group: 8 Sleek White Icons directly matching screenshot -->
+          <div class="controls-right">
+            <!-- 1. Globe / Audio Track -->
+            <button id="btn-lang" class="icon-btn" title="Audio Track & Language">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="2" y1="12" x2="22" y2="12"></line>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+              </svg>
+            </button>
+
+            <!-- 2. Speedometer / Speed -->
+            <div class="speed-selector-dropdown">
+              <button id="btn-speed" class="icon-btn" title="Playback Speed">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a10 10 0 1 0 10 10H12V2z"></path>
+                  <path d="M12 12L19 5"></path>
+                </svg>
+              </button>
+              <div class="dropdown-menu dropdown-menu-up" id="speed-dropdown-menu">
+                <button class="dropdown-item speed-opt" data-speed="0.25">0.25x</button>
+                <button class="dropdown-item speed-opt" data-speed="0.5">0.5x</button>
+                <button class="dropdown-item speed-opt" data-speed="0.75">0.75x</button>
+                <button class="dropdown-item speed-opt active" data-speed="1.0">Normal (1.0x)</button>
+                <button class="dropdown-item speed-opt" data-speed="1.25">1.25x</button>
+                <button class="dropdown-item speed-opt" data-speed="1.5">1.5x</button>
+                <button class="dropdown-item speed-opt" data-speed="2.0">2.0x</button>
+              </div>
+            </div>
+
+
+            <!-- 4. Subtitles CC -->
+            <label for="sub-input" class="icon-btn" title="Subtitles (.vtt / .srt)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+                <path d="M7 15h4M13 15h4M7 11h10"></path>
+              </svg>
+            </label>
+            <input type="file" id="sub-input" accept=".vtt,.srt" style="display: none;">
+
+            <!-- 6. Aspect Ratio Cycle Button (Cycles Stretch, Fit, Cover, 16:9, etc.) -->
+            <button id="btn-aspect-quick" class="icon-btn" title="Cycle Aspect Ratio Mode (Hotkey: A)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                <rect x="7" y="7" width="10" height="10" rx="1"></rect>
+              </svg>
+            </button>
+
+            <!-- 7. Fullscreen Expand -->
+            <button id="btn-fullscreen" class="icon-btn" title="Toggle Fullscreen (F)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <polyline points="9 21 3 21 3 15"></polyline>
+                <line x1="21" y1="3" x2="14" y2="10"></line>
+                <line x1="3" y1="21" x2="10" y2="14"></line>
+              </svg>
+            </button>
+
+
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Side Settings Drawer (Aspect Ratio & Video Customizer) -->
+    <aside class="side-drawer" id="side-drawer">
+      <div class="drawer-header">
+        <div class="drawer-title">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+            <path d="M7 3v18M17 3v18M3 7h18M3 17h18"></path>
+          </svg>
+          <h3>Aspect Ratio & Filters</h3>
+        </div>
+        <button id="btn-close-drawer" class="btn-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <div class="drawer-content">
+        <!-- Display & Video Stats Box -->
+        <div class="info-card">
+          <div class="info-row">
+            <span class="label">Screen Resolution:</span>
+            <span class="value" id="stat-screen-res">1920 x 1080</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Screen Aspect Ratio:</span>
+            <span class="value" id="stat-screen-aspect">1.78:1 (16:9)</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Video Native Res:</span>
+            <span class="value" id="stat-video-res">-- x --</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Video Native Aspect:</span>
+            <span class="value" id="stat-video-aspect">--</span>
+          </div>
+        </div>
+
+        <!-- Section 1: Aspect Ratio Scaling Mode -->
+        <div class="setting-section">
+          <h4>Aspect Scaling Mode</h4>
+          <div class="radio-group-vertical">
+            <label class="radio-card">
+              <input type="radio" name="aspect-mode" value="stretch-screen" checked>
+              <div class="radio-body">
+                <span class="title">Match & Stretch Screen</span>
+                <span class="desc">Force stretch video to fill screen 100% without letterbox</span>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="aspect-mode" value="fit">
+              <div class="radio-body">
+                <span class="title">Fit (Contain)</span>
+                <span class="desc">Preserve original aspect ratio with black borders</span>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="aspect-mode" value="stretch-fill">
+              <div class="radio-body">
+                <span class="title">Stretch Fill (Distort 100%)</span>
+                <span class="desc">Stretch horizontal and vertical to container</span>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="aspect-mode" value="cover">
+              <div class="radio-body">
+                <span class="title">Cover (Zoom & Crop)</span>
+                <span class="desc">Fill container while maintaining original ratio</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Section 2: Manual Stretch Fine-Tuning -->
+        <div class="setting-section">
+          <div class="section-title-bar">
+            <h4>Fine-Tune Scale & Stretch</h4>
+            <button class="btn-text" id="btn-reset-scaling">Reset</button>
+          </div>
+
+          <div class="slider-control">
+            <div class="slider-header">
+              <label>Horizontal Stretch (Scale X)</label>
+              <span class="slider-val" id="val-scale-x">100%</span>
+            </div>
+            <input type="range" id="slider-scale-x" min="50" max="250" value="100">
+          </div>
+
+          <div class="slider-control">
+            <div class="slider-header">
+              <label>Vertical Stretch (Scale Y)</label>
+              <span class="slider-val" id="val-scale-y">100%</span>
+            </div>
+            <input type="range" id="slider-scale-y" min="50" max="250" value="100">
+          </div>
+
+          <div class="slider-control">
+            <div class="slider-header">
+              <label>Pan Offset X</label>
+              <span class="slider-val" id="val-pan-x">0px</span>
+            </div>
+            <input type="range" id="slider-pan-x" min="-300" max="300" value="0">
+          </div>
+
+          <div class="slider-control">
+            <div class="slider-header">
+              <label>Pan Offset Y</label>
+              <span class="slider-val" id="val-pan-y">0px</span>
+            </div>
+            <input type="range" id="slider-pan-y" min="-300" max="300" value="0">
+          </div>
+        </div>
+
+        <!-- Section 3: Video Enhancements & Transforms -->
+        <div class="setting-section">
+          <div class="section-title-bar">
+            <h4>Picture & Color Filters</h4>
+            <button class="btn-text" id="btn-reset-filters">Reset</button>
+          </div>
+
+          <div class="slider-control">
+            <div class="slider-header">
+              <label>Brightness</label>
+              <span class="slider-val" id="val-brightness">100%</span>
+            </div>
+            <input type="range" id="slider-brightness" min="50" max="200" value="100">
+          </div>
+
+          <div class="slider-control">
+            <div class="slider-header">
+              <label>Contrast</label>
+              <span class="slider-val" id="val-contrast">100%</span>
+            </div>
+            <input type="range" id="slider-contrast" min="50" max="200" value="100">
+          </div>
+
+          <div class="slider-control">
+            <div class="slider-header">
+              <label>Saturation</label>
+              <span class="slider-val" id="val-saturation">100%</span>
+            </div>
+            <input type="range" id="slider-saturation" min="0" max="250" value="100">
+          </div>
+
+          <div class="toggle-group">
+            <button id="btn-rotate" class="btn btn-secondary btn-sm">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+              </svg>
+              <span>Rotate (0°)</span>
+            </button>
+
+            <button id="btn-flip-h" class="btn btn-secondary btn-sm">
+              <span>Flip H</span>
+            </button>
+
+            <button id="btn-flip-v" class="btn btn-secondary btn-sm">
+              <span>Flip V</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Section 4: Audio Volume Gain -->
+        <div class="setting-section">
+          <h4>Audio Boost</h4>
+          <div class="slider-control">
+            <div class="slider-header">
+              <label>Volume Gain (Boost)</label>
+              <span class="slider-val" id="val-gain">100%</span>
+            </div>
+            <input type="range" id="slider-gain" min="100" max="300" value="100">
+          </div>
+        </div>
+
+        <!-- Section 5: Ambient Glow Background -->
+        <div class="setting-section">
+          <div class="toggle-row">
+            <span>Ambient Backlight Effect</span>
+            <label class="switch">
+              <input type="checkbox" id="toggle-ambient" checked>
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Sample Videos Modal -->
+    <div class="modal-backdrop" id="modal-samples">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Load Demo Video</h3>
+          <button class="btn-icon close-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <p>Select a high quality demo MP4 video to test the aspect ratio stretch features instantly:</p>
+          <div class="sample-grid">
+            <button class="sample-card" data-url="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" data-name="Big Buck Bunny (720p MP4)">
+              <div class="sample-badge">16:9 MP4</div>
+              <h4>Big Buck Bunny</h4>
+              <p>Standard 16:9 animation video</p>
+            </button>
+
+            <button class="sample-card" data-url="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4" data-name="Tears of Steel (Sci-Fi Cinema MP4)">
+              <div class="sample-badge">2.40:1 Ultrawide</div>
+              <h4>Tears of Steel</h4>
+              <p>Ultrawide sci-fi demo movie</p>
+            </button>
+
+            <button class="sample-card" data-url="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4" data-name="For Bigger Blazes (1080p MP4)">
+              <div class="sample-badge">1080p MP4</div>
+              <h4>Chromecast Showcase</h4>
+              <p>High bitrate video clip</p>
+            </button>
+
+            <button class="sample-card" data-url="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4" data-name="Elephants Dream (Classic MP4)">
+              <div class="sample-badge">16:9 MP4</div>
+              <h4>Elephants Dream</h4>
+              <p>Classic open source film</p>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hotkeys Modal -->
+    <div class="modal-backdrop" id="modal-hotkeys">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Keyboard Shortcuts</h3>
+          <button class="btn-icon close-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="hotkey-grid">
+            <div class="hotkey-row"><kbd>Space</kbd> <span>Play / Pause</span></div>
+            <div class="hotkey-row"><kbd>&lt;</kbd> / <kbd>,</kbd> <span>Rewind 10s</span></div>
+            <div class="hotkey-row"><kbd>&gt;</kbd> / <kbd>.</kbd> <span>Forward 10s</span></div>
+            <div class="hotkey-row"><kbd>]</kbd> / <kbd>&gt;&gt;</kbd> <span>Forward 1:35 (Intro Skip)</span></div>
+            <div class="hotkey-row"><kbd>F</kbd> <span>Toggle Fullscreen</span></div>
+            <div class="hotkey-row"><kbd>A</kbd> <span>Cycle Aspect Ratio (Stremio Stretch)</span></div>
+            <div class="hotkey-row"><kbd>M</kbd> <span>Toggle Mute</span></div>
+            <div class="hotkey-row"><kbd>←</kbd> / <kbd>→</kbd> <span>Seek Backward / Forward 5s</span></div>
+            <div class="hotkey-row"><kbd>↑</kbd> / <kbd>↓</kbd> <span>Increase / Decrease Volume</span></div>
+            <div class="hotkey-row"><kbd>R</kbd> <span>Reset Aspect & Scale Settings</span></div>
+            <div class="hotkey-row"><kbd>S</kbd> <span>Open Aspect Settings Drawer</span></div>
+          </div>
+        </div>
+
+    <!-- Floating Playlist Island Panel (Right Side Pop-up) -->
+    <div id="playlist-island-panel" class="playlist-island-panel">
+      <div class="playlist-panel-header">
+        <div class="playlist-title-group">
+          <h3>🎬 Uploaded Videos</h3>
+          <span class="playlist-subtext" id="playlist-total-text">0 files</span>
+        </div>
+        <div class="playlist-header-actions">
+          <label for="playlist-file-input" class="btn btn-sm btn-primary" title="Add More Videos" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 6px;">
+            <span>+ Add</span>
+          </label>
+          <input type="file" id="playlist-file-input" accept="video/mp4,video/webm,video/ogg,video/mkv,.mp4,.webm,.mkv" multiple style="display: none;">
+          <button id="btn-close-playlist" class="btn-icon" style="width: 26px; height: 26px; font-size: 0.8rem;">✕</button>
+        </div>
+      </div>
+      <div class="playlist-panel-body" id="playlist-items-container">
+        <div class="playlist-empty-state">
+          <p>No videos uploaded yet</p>
+          <span class="playlist-empty-hint">Click "+ Add" or drop multiple MP4 files here</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
