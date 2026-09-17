@@ -25,6 +25,8 @@ namespace SomewaysHub
         private TextBlock timeTotalText;
         private Slider seekSlider;
         private Slider volumeSlider;
+        private TextBlock volPercentText;
+        private Button volBoostBtn;
         private Button playPauseBtn;
         private TextBlock playPauseIcon;
         private Button volBtn;
@@ -40,10 +42,13 @@ namespace SomewaysHub
         private DispatcherTimer clickTimer;
         private int clickCount = 0;
 
-        private System.Collections.Generic.List<string> playlistFiles = new System.Collections.Generic.List<string>();
-        private int currentPlaylistIndex = -1;
+        private System.Collections.Generic.List<PlaylistTab> playlistTabs = new System.Collections.Generic.List<PlaylistTab>();
+        private int activeTabIndex = 0;
+        private int playingTabIndex = 0;
+        private System.Collections.Generic.HashSet<string> watchedFiles = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private Border playlistPanel;
         private StackPanel playlistItemsStack;
+        private StackPanel tabBarStack;
         private TextBlock playlistTitleText;
 
         private TransformGroup transformGroup;
@@ -61,10 +66,19 @@ namespace SomewaysHub
         };
 
         private bool isDraggingSeeker = false;
+        private DispatcherTimer seekDebounceTimer;
+        private double pendingSeekSeconds = -1;
         private bool isFullscreen = false;
         private bool isPlaying = false;
         private WindowState previousWindowState;
         private WindowStyle previousWindowStyle;
+        private double skipIntroDuration = 95; // seconds, editable in settings
+        private Button forward135Btn; // reference so tooltip can be updated
+
+        // Hotkey Bindings Dictionary
+        private System.Collections.Generic.Dictionary<string, Key> hotkeys;
+        private string currentlyRebinding = null; // action name being rebound
+        private System.Collections.Generic.Dictionary<string, Button> hotkeyBtns = new System.Collections.Generic.Dictionary<string, Button>();
 
         [STAThread]
         public static void Main()
@@ -82,7 +96,7 @@ namespace SomewaysHub
 
         public MainWindow()
         {
-            Title = "Someway's Hub v2.0 - Aspect Ratio Media Player";
+            Title = "Someway's Hub v3.0 - Aspect Ratio Media Player";
             Width = 1280;
             Height = 750;
             MinHeight = 500;
@@ -269,16 +283,35 @@ namespace SomewaysHub
                 TextAlignment = TextAlignment.Center,
                 Margin = new Thickness(0, 0, 0, 20)
             };
-            Button emptyOpenBtn = CreateLiquidPillButton("📂  Browse MP4 / MKV Video", Color.FromRgb(34, 197, 94), Color.FromRgb(255, 140, 0), 8);
+            StackPanel emptyActionsRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 8, 0, 0)
+            };
+
+            Button emptyOpenBtn = CreateLiquidPillButton("📂  Open MP4 / MKV", Color.FromRgb(255, 120, 0), Color.FromRgb(255, 60, 0), 8);
             emptyOpenBtn.Height = 44;
-            emptyOpenBtn.Width = 210;
+            emptyOpenBtn.Width = 190;
+            emptyOpenBtn.Margin = new Thickness(0, 0, 10, 0);
             emptyOpenBtn.Click += (s, e) => OpenFileDialog();
+
+            Button emptyPlaylistBtn = CreateLiquidPillButton("📋  Playlist", Color.FromRgb(34, 197, 94), Color.FromRgb(16, 160, 70), 8);
+            emptyPlaylistBtn.Height = 44;
+            emptyPlaylistBtn.Width = 150;
+            emptyPlaylistBtn.Click += (s, e) => TogglePlaylistPanel();
+
+            emptyActionsRow.Children.Add(emptyOpenBtn);
+            emptyActionsRow.Children.Add(emptyPlaylistBtn);
 
             emptyStack.Children.Add(emptyTitle);
             emptyStack.Children.Add(emptyDesc);
-            emptyStack.Children.Add(emptyOpenBtn);
+            emptyStack.Children.Add(emptyActionsRow);
             emptyCard.Child = emptyStack;
             overlayGrid.Children.Add(emptyCard);
+
+            LoadWatchedFromDisk();
+            LoadAllPlaylistsFromDisk();
 
             // ==================================================================
             // DIRECT-ON-VIDEO CONTROLS BAR (DOCK BACKGROUND REMOVED!)
@@ -328,7 +361,7 @@ namespace SomewaysHub
                 VerticalAlignment = VerticalAlignment.Center,
                 Foreground = new SolidColorBrush(Color.FromRgb(34, 197, 94))
             };
-            ApplyCircularSliderStyle(seekSlider, Color.FromRgb(34, 197, 94), Color.FromRgb(34, 197, 94), 11);
+            ApplyCircularSliderStyle(seekSlider, new SolidColorBrush(Color.FromRgb(34, 197, 94)), Color.FromRgb(34, 197, 94), 11);
             Grid.SetColumn(seekSlider, 1);
             seekRow.Children.Add(seekSlider);
 
@@ -372,9 +405,9 @@ namespace SomewaysHub
             forwardBtn.Margin = new Thickness(0, 0, 8, 0);
             forwardBtn.Click += (s, e) => SeekRelative(10);
 
-            Button forward135Btn = CreateLiquidIconButton(">>", "Forward 1:35 (>>)", 34, 34, 17);
+            forward135Btn = CreateLiquidIconButton(">>", "Skip Intro (>>)", 34, 34, 17);
             forward135Btn.Margin = new Thickness(0, 0, 14, 0);
-            forward135Btn.Click += (s, e) => SeekRelative(95);
+            forward135Btn.Click += (s, e) => SeekRelative(skipIntroDuration);
 
             volBtn = CreateLiquidIconButton("🔊", "Mute / Unmute (M)", 34, 34, 17);
             volBtn.Margin = new Thickness(0, 0, 4, 0);
@@ -385,25 +418,42 @@ namespace SomewaysHub
             {
                 Width = 95,
                 Minimum = 0,
-                Maximum = 1,
-                Value = 1,
+                Maximum = 5.0,
+                Value = 1.0,
                 VerticalAlignment = VerticalAlignment.Center,
-                Foreground = new SolidColorBrush(Color.FromRgb(255, 140, 0))
+                Foreground = new SolidColorBrush(Color.FromRgb(34, 197, 94))
             };
-            ApplyCircularSliderStyle(volumeSlider, Color.FromRgb(255, 140, 0), Color.FromRgb(255, 140, 0), 10);
+
+            volPercentText = new TextBlock
+            {
+                Text = "100%",
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(Color.FromRgb(34, 197, 94)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 6, 0),
+                MinWidth = 36,
+                TextAlignment = TextAlignment.Center
+            };
+
+            volBoostBtn = CreateLiquidPillButton("⚡ 500%", Color.FromRgb(34, 197, 94), Color.FromRgb(255, 140, 0), 6);
+            volBoostBtn.Height = 26;
+            volBoostBtn.Margin = new Thickness(2, 0, 0, 0);
+            volBoostBtn.ToolTip = "Toggle 500% Max Volume Boost (HotKey: B)";
+            volBoostBtn.Click += (s, e) => Toggle200PercentBoost();
+
             volumeSlider.ValueChanged += (s, e) =>
             {
-                mediaElement.Volume = volumeSlider.Value;
-                if (volumeSlider.Value == 0)
-                {
-                    mediaElement.IsMuted = true;
-                    if (volIcon != null) volIcon.Text = "🔇";
-                }
-                else
-                {
-                    mediaElement.IsMuted = false;
-                    if (volIcon != null) volIcon.Text = "🔊";
-                }
+                UpdateVolumeUI(volumeSlider.Value);
+            };
+            UpdateVolumeUI(1.0);
+
+            // Enable mouse wheel volume control over left controls
+            leftControls.PreviewMouseWheel += (s, e) =>
+            {
+                e.Handled = true;
+                double step = e.Delta > 0 ? 0.05 : -0.05;
+                SetVolume(volumeSlider.Value + step);
             };
 
             leftControls.Children.Add(rewindBtn);
@@ -412,6 +462,8 @@ namespace SomewaysHub
             leftControls.Children.Add(forward135Btn);
             leftControls.Children.Add(volBtn);
             leftControls.Children.Add(volumeSlider);
+            leftControls.Children.Add(volPercentText);
+            leftControls.Children.Add(volBoostBtn);
 
             Grid.SetColumn(leftControls, 0);
             controlsRow.Children.Add(leftControls);
@@ -455,6 +507,7 @@ namespace SomewaysHub
             Panel.SetZIndex(bottomPodBorder, 100);
             overlayGrid.Children.Add(bottomPodBorder);
 
+            InitHotkeys();
             InitSettingsPanel();
             InitPlaylistPanel();
         }
@@ -485,28 +538,35 @@ namespace SomewaysHub
         {
             settingsPanel = new Border
             {
-                Width = 340,
+                Width = 360,
+                MaxHeight = SystemParameters.PrimaryScreenHeight * 0.5,
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Top,
                 Margin = new Thickness(0, 65, 20, 0),
-                Background = new SolidColorBrush(Color.FromArgb(240, 14, 17, 28)),
+                Background = new SolidColorBrush(Color.FromArgb(245, 14, 17, 28)),
                 BorderBrush = new SolidColorBrush(Color.FromArgb(150, 34, 197, 94)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(18),
-                Padding = new Thickness(20),
+                Padding = new Thickness(0),
                 Visibility = Visibility.Collapsed,
                 Effect = new DropShadowEffect { BlurRadius = 30, Color = Colors.Black, Opacity = 0.85 }
             };
 
-            StackPanel panelStack = new StackPanel();
+            // Outer DockPanel: pinned header on top, scrollable body below
+            DockPanel outerDock = new DockPanel { LastChildFill = true };
 
-            Grid headerGrid = new Grid { Margin = new Thickness(0, 0, 0, 16) };
+            // Pinned header
+            Grid headerGrid = new Grid
+            {
+                Margin = new Thickness(20, 16, 20, 10),
+                HorizontalAlignment = HorizontalAlignment.Stretch
+            };
             headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             TextBlock panelTitle = new TextBlock
             {
-                Text = "⚙ Screen Stretching",
+                Text = "\u2699 Settings",
                 FontSize = 16,
                 FontWeight = FontWeights.Bold,
                 Foreground = Brushes.White,
@@ -514,13 +574,40 @@ namespace SomewaysHub
             };
             Grid.SetColumn(panelTitle, 0);
 
-            Button closeBtn = CreateLiquidIconButton("✕", "Close", 28, 28, 14);
+            Button closeBtn = CreateLiquidIconButton("\u2715", "Close", 28, 28, 14);
             closeBtn.Click += (s, e) => settingsPanel.Visibility = Visibility.Collapsed;
             Grid.SetColumn(closeBtn, 1);
 
             headerGrid.Children.Add(panelTitle);
             headerGrid.Children.Add(closeBtn);
-            panelStack.Children.Add(headerGrid);
+            DockPanel.SetDock(headerGrid, Dock.Top);
+            outerDock.Children.Add(headerGrid);
+
+            // Thin separator line under header
+            Border headerSep = new Border
+            {
+                Height = 1,
+                Background = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
+                Margin = new Thickness(0, 0, 0, 0)
+            };
+            DockPanel.SetDock(headerSep, Dock.Top);
+            outerDock.Children.Add(headerSep);
+
+            // Scrollable content
+            ScrollViewer scrollViewer = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Padding = new Thickness(0)
+            };
+            ApplyThinScrollbarStyle(scrollViewer);
+
+            StackPanel panelStack = new StackPanel { Margin = new Thickness(20, 14, 20, 20) };
+            scrollViewer.Content = panelStack;
+            outerDock.Children.Add(scrollViewer);
+            settingsPanel.Child = outerDock;
+
+            // (No separate headerGrid/panelStack additions below — they are declared above)
 
             // Scale X Row
             Grid scaleXRow = new Grid { Margin = new Thickness(0, 0, 0, 4) };
@@ -576,7 +663,7 @@ namespace SomewaysHub
                 Height = 22,
                 Margin = new Thickness(0, 0, 0, 16)
             };
-            ApplyCircularSliderStyle(sliderScaleX, Color.FromRgb(34, 197, 94), Color.FromRgb(34, 197, 94), 12);
+            ApplyCircularSliderStyle(sliderScaleX, new SolidColorBrush(Color.FromRgb(34, 197, 94)), Color.FromRgb(34, 197, 94), 12);
             sliderScaleX.ValueChanged += (s, e) =>
             {
                 int val = (int)sliderScaleX.Value;
@@ -642,7 +729,7 @@ namespace SomewaysHub
                 Height = 22,
                 Margin = new Thickness(0, 0, 0, 16)
             };
-            ApplyCircularSliderStyle(sliderScaleY, Color.FromRgb(255, 140, 0), Color.FromRgb(255, 140, 0), 12);
+            ApplyCircularSliderStyle(sliderScaleY, new SolidColorBrush(Color.FromRgb(255, 140, 0)), Color.FromRgb(255, 140, 0), 12);
             sliderScaleY.ValueChanged += (s, e) =>
             {
                 int val = (int)sliderScaleY.Value;
@@ -663,7 +750,256 @@ namespace SomewaysHub
             };
             panelStack.Children.Add(resetBtn);
 
-            settingsPanel.Child = panelStack;
+            // Separator
+            Border sep = new Border
+            {
+                Height = 1,
+                Background = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
+                Margin = new Thickness(0, 14, 0, 14)
+            };
+            panelStack.Children.Add(sep);
+
+            // Skip Intro Duration Row
+            TextBlock skipLabel = new TextBlock
+            {
+                Text = "⏭  Skip Intro (>> button) Duration",
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            panelStack.Children.Add(skipLabel);
+
+            Grid skipRow = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+            skipRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            skipRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            TextBlock skipRowLabel = new TextBlock
+            {
+                Text = "Seconds to skip:",
+                FontSize = 12,
+                Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            StackPanel skipActions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
+            Button btnSkipSub = CreateLiquidIconButton("-", "Decrease by 5s", 22, 22, 11);
+            btnSkipSub.Margin = new Thickness(0, 0, 4, 0);
+
+            TextBox txtSkipDuration = CreateDigitInputBox(((int)skipIntroDuration).ToString());
+            txtSkipDuration.Width = 50;
+
+            Button btnSkipAdd = CreateLiquidIconButton("+", "Increase by 5s", 22, 22, 11);
+            btnSkipAdd.Margin = new Thickness(4, 0, 6, 0);
+
+            Button btnSkipReset = CreateLiquidIconButton("🔄", "Reset to 1:35 (95s)", 22, 22, 11);
+
+            // Wire up skip duration controls
+            btnSkipSub.Click += (s, e) =>
+            {
+                skipIntroDuration = Math.Max(5, skipIntroDuration - 5);
+                txtSkipDuration.Text = ((int)skipIntroDuration).ToString();
+                UpdateSkipIntroTooltip();
+            };
+            btnSkipAdd.Click += (s, e) =>
+            {
+                skipIntroDuration = Math.Min(600, skipIntroDuration + 5);
+                txtSkipDuration.Text = ((int)skipIntroDuration).ToString();
+                UpdateSkipIntroTooltip();
+            };
+            btnSkipReset.Click += (s, e) =>
+            {
+                skipIntroDuration = 95;
+                txtSkipDuration.Text = "95";
+                UpdateSkipIntroTooltip();
+            };
+            txtSkipDuration.TextChanged += (s, e) =>
+            {
+                int val;
+                if (int.TryParse(txtSkipDuration.Text, out val) && val >= 1 && val <= 600)
+                {
+                    skipIntroDuration = val;
+                    UpdateSkipIntroTooltip();
+                }
+            };
+
+            skipActions.Children.Add(btnSkipSub);
+            skipActions.Children.Add(txtSkipDuration);
+            skipActions.Children.Add(btnSkipAdd);
+            skipActions.Children.Add(btnSkipReset);
+
+            Grid.SetColumn(skipRowLabel, 0);
+            Grid.SetColumn(skipActions, 1);
+            skipRow.Children.Add(skipRowLabel);
+            skipRow.Children.Add(skipActions);
+            panelStack.Children.Add(skipRow);
+
+            TextBlock skipHint = new TextBlock
+            {
+                Text = "Default: 95s (1:35). Range: 1–600s.",
+                FontSize = 10,
+                Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
+                Margin = new Thickness(0, 4, 0, 0)
+            };
+            panelStack.Children.Add(skipHint);
+
+            // ================================================================
+            // 200% VOLUME BOOSTER SECTION
+            // ================================================================
+            Border volBoostSep = new Border
+            {
+                Height = 1,
+                Background = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
+                Margin = new Thickness(0, 14, 0, 14)
+            };
+            panelStack.Children.Add(volBoostSep);
+
+            TextBlock volBoostTitle = new TextBlock
+            {
+                Text = "🚀  500% Audio Volume Booster",
+                FontSize = 13,
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(Color.FromRgb(244, 114, 182)),
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            panelStack.Children.Add(volBoostTitle);
+
+            TextBlock volBoostHint = new TextBlock
+            {
+                Text = "Amplify media audio output up to 500% (+14dB gain). Quick select volume level:",
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                Margin = new Thickness(0, 0, 0, 8),
+                TextWrapping = TextWrapping.Wrap
+            };
+            panelStack.Children.Add(volBoostHint);
+
+            StackPanel presetStack = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+            double[] volPresets = new double[] { 1.0, 1.5, 2.0, 3.0, 5.0 };
+            string[] presetLabels = new string[] { "100%", "150%", "200%", "300%", "🔥 500% MAX" };
+
+            for (int pIndex = 0; pIndex < volPresets.Length; pIndex++)
+            {
+                double pVal = volPresets[pIndex];
+                string pLabel = presetLabels[pIndex];
+                Color pColor;
+                if (pVal <= 1.0)
+                {
+                    pColor = Color.FromRgb(34, 197, 94);
+                }
+                else
+                {
+                    double t = Math.Min(1.0, pVal - 1.0);
+                    byte r = (byte)(34 + (255 - 34) * t);
+                    byte g = (byte)(197 + (140 - 197) * t);
+                    byte b = (byte)(94 + (0 - 94) * t);
+                    pColor = Color.FromRgb(r, g, b);
+                }
+
+                Button btnPreset = CreateLiquidPillButton(pLabel, pColor, pColor, 6);
+                btnPreset.Height = 28;
+                btnPreset.Margin = new Thickness(0, 0, 6, 0);
+                btnPreset.Click += (s, e) => SetVolume(pVal);
+                presetStack.Children.Add(btnPreset);
+            }
+            panelStack.Children.Add(presetStack);
+
+            // ================================================================
+            // KEYBINDS SECTION
+            // ================================================================
+            Border keySep = new Border
+            {
+                Height = 1,
+                Background = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
+                Margin = new Thickness(0, 14, 0, 14)
+            };
+            panelStack.Children.Add(keySep);
+
+            TextBlock keyTitle = new TextBlock
+            {
+                Text = "⌨  Hotkey Bindings",
+                FontSize = 13,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            panelStack.Children.Add(keyTitle);
+
+            TextBlock keyHint = new TextBlock
+            {
+                Text = "Click a key button and press any key to rebind.",
+                FontSize = 10,
+                Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            panelStack.Children.Add(keyHint);
+
+            string[] actionNames = new string[]
+            {
+                "Play / Pause",
+                "Fullscreen",
+                "Aspect Ratio",
+                "Mute",
+                "Seek Back 5s",
+                "Seek Forward 5s",
+                "Volume Up",
+                "Volume Down",
+                "Toggle 200% Boost",
+                "Rewind 10s",
+                "Forward 10s",
+                "Skip Intro (>>)"
+            };
+
+            foreach (string action in actionNames)
+            {
+                string act = action;
+                Grid row = new Grid { Margin = new Thickness(0, 0, 0, 5) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                TextBlock lbl = new TextBlock
+                {
+                    Text = act,
+                    FontSize = 12,
+                    Foreground = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+
+                Key currentKey = hotkeys.ContainsKey(act) ? hotkeys[act] : Key.None;
+                Button rebindBtn = CreateRebindButton(KeyToLabel(currentKey));
+                rebindBtn.Tag = act;
+                rebindBtn.Click += (s, e) => StartRebinding(act);
+                hotkeyBtns[act] = rebindBtn;
+
+                Button resetBtn2 = CreateLiquidIconButton("\u21ba", "Reset to default", 22, 22, 8);
+                resetBtn2.Margin = new Thickness(4, 0, 0, 0);
+                resetBtn2.Click += (s, e) =>
+                {
+                    Key def = GetDefaultKey(act);
+                    hotkeys[act] = def;
+                    if (hotkeyBtns.ContainsKey(act))
+                        UpdateRebindBtnLabel(hotkeyBtns[act], KeyToLabel(def));
+                    if (currentlyRebinding == act) CancelRebinding();
+                };
+
+                StackPanel rbWrap = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                rbWrap.Children.Add(rebindBtn);
+                rbWrap.Children.Add(resetBtn2);
+
+                Grid.SetColumn(lbl, 0);
+                Grid.SetColumn(rbWrap, 1);
+                row.Children.Add(lbl);
+                row.Children.Add(rbWrap);
+                panelStack.Children.Add(row);
+            }
+
+            Button resetAllBtn = CreateLiquidPillButton("\ud83d\udd04  Reset All Keybinds", Color.FromRgb(100, 116, 139), Color.FromRgb(71, 85, 105), 10);
+            resetAllBtn.Height = 30;
+            resetAllBtn.Margin = new Thickness(0, 8, 0, 0);
+            resetAllBtn.Click += (s, e) => ResetAllHotkeys();
+            panelStack.Children.Add(resetAllBtn);
+
             Panel.SetZIndex(settingsPanel, 200);
             overlayGrid.Children.Add(settingsPanel);
         }
@@ -672,8 +1008,8 @@ namespace SomewaysHub
         {
             playlistPanel = new Border
             {
-                Width = 330,
-                Height = 450,
+                Width = 370,
+                Height = 540,
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Top,
                 Margin = new Thickness(0, 65, 20, 0),
@@ -681,24 +1017,49 @@ namespace SomewaysHub
                 BorderBrush = new SolidColorBrush(Color.FromArgb(150, 34, 197, 94)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(18),
-                Padding = new Thickness(16),
+                Padding = new Thickness(14),
                 Visibility = Visibility.Collapsed,
                 Effect = new DropShadowEffect { BlurRadius = 30, Color = Colors.Black, Opacity = 0.85 }
             };
             Panel.SetZIndex(playlistPanel, 200);
 
-            Grid mainStack = new Grid();
-            mainStack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            mainStack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            Grid plGrid = new Grid();
+            plGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // tab bar
+            plGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // separator
+            plGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // header row
+            plGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // items
 
-            Grid headerGrid = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+            // ── Tab Bar ────────────────────────────────────────────────────────
+            ScrollViewer tabScroll = new ScrollViewer
+            {
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            tabBarStack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            tabScroll.Content = tabBarStack;
+            Grid.SetRow(tabScroll, 0);
+            plGrid.Children.Add(tabScroll);
+
+            // ── Separator ─────────────────────────────────────────────────────
+            Border tabSep = new Border
+            {
+                Height = 1,
+                Background = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            Grid.SetRow(tabSep, 1);
+            plGrid.Children.Add(tabSep);
+
+            // ── Header Row ────────────────────────────────────────────────────
+            Grid headerGrid = new Grid { Margin = new Thickness(0, 0, 0, 10) };
             headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             playlistTitleText = new TextBlock
             {
-                Text = "🎬 Uploaded Videos (0)",
-                FontSize = 15,
+                Text = "🎬 Playlist 1 (0)",
+                FontSize = 14,
                 FontWeight = FontWeights.Bold,
                 Foreground = Brushes.White,
                 VerticalAlignment = VerticalAlignment.Center
@@ -706,7 +1067,7 @@ namespace SomewaysHub
             Grid.SetColumn(playlistTitleText, 0);
 
             StackPanel headerActions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-            
+
             Button addMoreBtn = CreateLiquidPillButton("+ Add", Color.FromRgb(34, 197, 94), Color.FromRgb(255, 140, 0), 6);
             addMoreBtn.Height = 26;
             addMoreBtn.Margin = new Thickness(0, 0, 8, 0);
@@ -721,24 +1082,25 @@ namespace SomewaysHub
 
             headerGrid.Children.Add(playlistTitleText);
             headerGrid.Children.Add(headerActions);
-            Grid.SetRow(headerGrid, 0);
-            mainStack.Children.Add(headerGrid);
+            Grid.SetRow(headerGrid, 2);
+            plGrid.Children.Add(headerGrid);
 
+            // ── Items List ────────────────────────────────────────────────────
             ScrollViewer scroll = new ScrollViewer
             {
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
             };
-
             playlistItemsStack = new StackPanel();
             scroll.Content = playlistItemsStack;
+            ApplyThinScrollbarStyle(scroll);
+            Grid.SetRow(scroll, 3);
+            plGrid.Children.Add(scroll);
 
-            Grid.SetRow(scroll, 1);
-            mainStack.Children.Add(scroll);
-
-            playlistPanel.Child = mainStack;
+            playlistPanel.Child = plGrid;
             overlayGrid.Children.Add(playlistPanel);
 
+            RefreshTabBar();
             RefreshPlaylistUI();
         }
 
@@ -756,6 +1118,8 @@ namespace SomewaysHub
         private void AddFilesToPlaylist(string[] files, bool playIfFirst)
         {
             if (files == null || files.Length == 0) return;
+            var tab = GetActiveTab();
+            if (tab == null) return;
 
             bool addedAny = false;
             foreach (string file in files)
@@ -764,29 +1128,45 @@ namespace SomewaysHub
                 string ext = System.IO.Path.GetExtension(file).ToLower();
                 if (ext == ".mp4" || ext == ".webm" || ext == ".mkv" || ext == ".avi" || ext == ".mov" || ext == ".m4v" || ext == ".wmv" || ext == ".flv")
                 {
-                    if (!playlistFiles.Contains(file))
+                    if (!tab.Files.Contains(file))
                     {
-                        playlistFiles.Add(file);
+                        tab.Files.Add(file);
                         addedAny = true;
                     }
                 }
             }
 
-            if (playlistFiles.Count > 0)
+            if (tab.Files.Count > 0)
             {
                 RefreshPlaylistUI();
-                if (currentPlaylistIndex == -1 || (playIfFirst && !isPlaying))
+                SaveAllPlaylistsToDisk();
+                if (tab.CurrentIndex == -1 || (playIfFirst && !isPlaying))
                 {
-                    PlayPlaylistItem(playlistFiles.Count - (addedAny ? 1 : 0));
+                    PlayPlaylistItem(tab.Files.Count - (addedAny ? 1 : 0));
                 }
             }
         }
 
         private void PlayPlaylistItem(int index)
         {
-            if (index < 0 || index >= playlistFiles.Count) return;
-            currentPlaylistIndex = index;
-            string filePath = playlistFiles[index];
+            var tab = GetActiveTab();
+            if (tab == null) return;
+            if (index < 0 || index >= tab.Files.Count) return;
+
+            // When moving away from a video, mark the previously playing video as watched (red)
+            if (tab.CurrentIndex >= 0 && tab.CurrentIndex < tab.Files.Count && tab.CurrentIndex != index)
+            {
+                string prevFile = tab.Files[tab.CurrentIndex];
+                if (!string.IsNullOrEmpty(prevFile))
+                {
+                    watchedFiles.Add(prevFile);
+                    SaveWatchedToDisk();
+                }
+            }
+
+            tab.CurrentIndex = index;
+            playingTabIndex = activeTabIndex;
+            string filePath = tab.Files[index];
             string targetPath = filePath;
 
             string ext = System.IO.Path.GetExtension(filePath).ToLower();
@@ -811,7 +1191,7 @@ namespace SomewaysHub
             playPauseIcon.Text = "⏸";
             ShowControls();
             RefreshPlaylistUI();
-            ShowToast(string.Format("Playing [{0}/{1}]: {2}", index + 1, playlistFiles.Count, System.IO.Path.GetFileName(filePath)));
+            ShowToast(string.Format("Playing [{0}/{1}]: {2}", index + 1, tab.Files.Count, System.IO.Path.GetFileName(filePath)));
         }
 
         private void CheckAndAutoConvertMKV(string mkvFile, string mp4File)
@@ -842,7 +1222,8 @@ namespace SomewaysHub
                             Dispatcher.Invoke(() =>
                             {
                                 ShowToast("✅ MKV Picture Optimization Ready!");
-                                if (currentPlaylistIndex >= 0 && playlistFiles[currentPlaylistIndex] == mkvFile)
+                                var pTab = (playingTabIndex >= 0 && playingTabIndex < playlistTabs.Count) ? playlistTabs[playingTabIndex] : null;
+                                if (pTab != null && pTab.CurrentIndex >= 0 && pTab.CurrentIndex < pTab.Files.Count && pTab.Files[pTab.CurrentIndex] == mkvFile)
                                 {
                                     TimeSpan pos = mediaElement.Position;
                                     mediaElement.Source = new Uri(mp4File);
@@ -859,13 +1240,15 @@ namespace SomewaysHub
 
         private void RemovePlaylistItem(int index)
         {
-            if (index < 0 || index >= playlistFiles.Count) return;
-            bool wasPlayingThis = (currentPlaylistIndex == index);
-            playlistFiles.RemoveAt(index);
+            var tab = GetActiveTab();
+            if (tab == null) return;
+            if (index < 0 || index >= tab.Files.Count) return;
+            bool wasPlayingThis = (tab.CurrentIndex == index);
+            tab.Files.RemoveAt(index);
 
-            if (playlistFiles.Count == 0)
+            if (tab.Files.Count == 0)
             {
-                currentPlaylistIndex = -1;
+                tab.CurrentIndex = -1;
                 mediaElement.Stop();
                 mediaElement.Source = null;
                 isPlaying = false;
@@ -877,56 +1260,193 @@ namespace SomewaysHub
             {
                 if (wasPlayingThis)
                 {
-                    int nextIdx = (index < playlistFiles.Count) ? index : playlistFiles.Count - 1;
+                    int nextIdx = (index < tab.Files.Count) ? index : tab.Files.Count - 1;
                     PlayPlaylistItem(nextIdx);
                 }
-                else if (currentPlaylistIndex > index)
+                else if (tab.CurrentIndex > index)
                 {
-                    currentPlaylistIndex--;
+                    tab.CurrentIndex--;
                 }
             }
 
             RefreshPlaylistUI();
+            SaveAllPlaylistsToDisk();
         }
 
         private void MovePlaylistItem(int fromIndex, int toIndex)
         {
-            if (fromIndex < 0 || fromIndex >= playlistFiles.Count) return;
-            if (toIndex < 0 || toIndex >= playlistFiles.Count) return;
+            var tab = GetActiveTab();
+            if (tab == null) return;
+            if (fromIndex < 0 || fromIndex >= tab.Files.Count) return;
+            if (toIndex < 0 || toIndex >= tab.Files.Count) return;
             if (fromIndex == toIndex) return;
 
-            string item = playlistFiles[fromIndex];
-            playlistFiles.RemoveAt(fromIndex);
-            playlistFiles.Insert(toIndex, item);
+            string item = tab.Files[fromIndex];
+            tab.Files.RemoveAt(fromIndex);
+            tab.Files.Insert(toIndex, item);
 
-            if (currentPlaylistIndex == fromIndex)
+            if (tab.CurrentIndex == fromIndex)
             {
-                currentPlaylistIndex = toIndex;
+                tab.CurrentIndex = toIndex;
             }
-            else if (currentPlaylistIndex > fromIndex && currentPlaylistIndex <= toIndex)
+            else if (tab.CurrentIndex > fromIndex && tab.CurrentIndex <= toIndex)
             {
-                currentPlaylistIndex--;
+                tab.CurrentIndex--;
             }
-            else if (currentPlaylistIndex < fromIndex && currentPlaylistIndex >= toIndex)
+            else if (tab.CurrentIndex < fromIndex && tab.CurrentIndex >= toIndex)
             {
-                currentPlaylistIndex++;
+                tab.CurrentIndex++;
             }
 
             RefreshPlaylistUI();
+            SaveAllPlaylistsToDisk();
             ShowToast(string.Format("Reordered: {0}", System.IO.Path.GetFileName(item)));
+        }
+
+        private void SaveAllPlaylistsToDisk()
+        {
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string folder = System.IO.Path.Combine(appData, "SomewayHub");
+                Directory.CreateDirectory(folder);
+                string path = System.IO.Path.Combine(folder, "playlists_v2.txt");
+                var lines = new System.Collections.Generic.List<string>();
+                lines.Add("ACTIVE:" + activeTabIndex.ToString());
+                foreach (var t in playlistTabs)
+                {
+                    lines.Add("TAB:" + t.Name + "|" + t.CurrentIndex.ToString());
+                    foreach (string f in t.Files)
+                        lines.Add(f);
+                }
+                File.WriteAllLines(path, lines);
+            }
+            catch { }
+        }
+
+        private void SaveWatchedToDisk()
+        {
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string folder = System.IO.Path.Combine(appData, "SomewayHub");
+                Directory.CreateDirectory(folder);
+                string path = System.IO.Path.Combine(folder, "watched.txt");
+                File.WriteAllLines(path, watchedFiles);
+            }
+            catch { }
+        }
+
+        private void LoadWatchedFromDisk()
+        {
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string path = System.IO.Path.Combine(appData, "SomewayHub", "watched.txt");
+                if (File.Exists(path))
+                {
+                    string[] lines = File.ReadAllLines(path);
+                    watchedFiles.Clear();
+                    foreach (string f in lines)
+                    {
+                        if (!string.IsNullOrWhiteSpace(f))
+                            watchedFiles.Add(f);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void LoadAllPlaylistsFromDisk()
+        {
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+
+                // Try new multi-playlist format first
+                string newPath = System.IO.Path.Combine(appData, "SomewayHub", "playlists_v2.txt");
+                if (File.Exists(newPath))
+                {
+                    string[] lines = File.ReadAllLines(newPath);
+                    playlistTabs.Clear();
+                    PlaylistTab curTab = null;
+                    activeTabIndex = 0;
+
+                    foreach (string line in lines)
+                    {
+                        if (line.StartsWith("ACTIVE:"))
+                        {
+                            int.TryParse(line.Substring(7), out activeTabIndex);
+                        }
+                        else if (line.StartsWith("TAB:"))
+                        {
+                            string rest = line.Substring(4);
+                            string[] parts = rest.Split('|');
+                            string tabName = parts[0];
+                            int tabCurIdx = -1;
+                            if (parts.Length > 1) int.TryParse(parts[1], out tabCurIdx);
+                            curTab = new PlaylistTab(tabName);
+                            curTab.CurrentIndex = tabCurIdx;
+                            playlistTabs.Add(curTab);
+                        }
+                        else if (!string.IsNullOrWhiteSpace(line) && curTab != null)
+                        {
+                            if (File.Exists(line) && !curTab.Files.Contains(line))
+                                curTab.Files.Add(line);
+                        }
+                    }
+
+                    if (activeTabIndex < 0 || activeTabIndex >= playlistTabs.Count) activeTabIndex = 0;
+                }
+                else
+                {
+                    // Migrate from old single-playlist format
+                    string oldPath = System.IO.Path.Combine(appData, "SomewayHub", "playlist.txt");
+                    if (File.Exists(oldPath))
+                    {
+                        PlaylistTab migrated = new PlaylistTab("Playlist 1");
+                        foreach (string f in File.ReadAllLines(oldPath))
+                        {
+                            if (!string.IsNullOrWhiteSpace(f) && File.Exists(f) && !migrated.Files.Contains(f))
+                                migrated.Files.Add(f);
+                        }
+                        playlistTabs.Add(migrated);
+                    }
+                }
+
+                // Always ensure at least one tab exists
+                if (playlistTabs.Count == 0)
+                    playlistTabs.Add(new PlaylistTab("Playlist 1"));
+
+                activeTabIndex = Math.Max(0, Math.Min(activeTabIndex, playlistTabs.Count - 1));
+                playingTabIndex = activeTabIndex;
+                RefreshTabBar();
+                RefreshPlaylistUI();
+            }
+            catch
+            {
+                if (playlistTabs.Count == 0)
+                    playlistTabs.Add(new PlaylistTab("Playlist 1"));
+                RefreshTabBar();
+                RefreshPlaylistUI();
+            }
         }
 
         private void RefreshPlaylistUI()
         {
+            var tab = GetActiveTab();
+
             if (playlistTitleText != null)
             {
-                playlistTitleText.Text = string.Format("🎬 Uploaded Videos ({0})", playlistFiles.Count);
+                string tabName = tab != null ? tab.Name : "Playlist 1";
+                int count = tab != null ? tab.Files.Count : 0;
+                playlistTitleText.Text = string.Format("🎬 {0} ({1})", tabName, count);
             }
             if (playlistItemsStack == null) return;
 
             playlistItemsStack.Children.Clear();
 
-            if (playlistFiles.Count == 0)
+            if (tab == null || tab.Files.Count == 0)
             {
                 TextBlock emptyTb = new TextBlock
                 {
@@ -941,24 +1461,44 @@ namespace SomewaysHub
                 return;
             }
 
-            for (int i = 0; i < playlistFiles.Count; i++)
+            for (int i = 0; i < tab.Files.Count; i++)
             {
                 int itemIndex = i;
-                string fullPath = playlistFiles[i];
+                string fullPath = tab.Files[i];
                 string nameOnly = System.IO.Path.GetFileName(fullPath);
-                bool isCurrent = (i == currentPlaylistIndex);
+                bool isCurrent = (i == tab.CurrentIndex);
+                bool isWatched = watchedFiles.Contains(fullPath);
+
+                Color statusColor;
+                string statusTooltip;
+
+                if (isCurrent)
+                {
+                    statusColor = Color.FromRgb(234, 179, 8);
+                    statusTooltip = "Currently Watching";
+                }
+                else if (isWatched)
+                {
+                    statusColor = Color.FromRgb(239, 68, 68);
+                    statusTooltip = "Watched";
+                }
+                else
+                {
+                    statusColor = Color.FromRgb(34, 197, 94);
+                    statusTooltip = "Unwatched";
+                }
 
                 Border itemCard = new Border
                 {
                     Margin = new Thickness(0, 0, 0, 8),
                     Padding = new Thickness(8, 6, 8, 6),
                     CornerRadius = new CornerRadius(10),
-                    Background = isCurrent 
-                        ? new SolidColorBrush(Color.FromArgb(120, 34, 197, 94)) 
+                    Background = isCurrent
+                        ? new SolidColorBrush(Color.FromArgb(110, 234, 179, 8))
                         : new SolidColorBrush(Color.FromArgb(90, 20, 24, 38)),
-                    BorderBrush = isCurrent 
-                        ? new SolidColorBrush(Color.FromRgb(34, 197, 94)) 
-                        : new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
+                    BorderBrush = isCurrent
+                        ? new SolidColorBrush(Color.FromRgb(234, 179, 8))
+                        : (isWatched ? new SolidColorBrush(Color.FromArgb(80, 239, 68, 68)) : new SolidColorBrush(Color.FromArgb(60, 255, 255, 255))),
                     BorderThickness = new Thickness(1),
                     Cursor = Cursors.Hand,
                     AllowDrop = true,
@@ -966,6 +1506,7 @@ namespace SomewaysHub
                 };
 
                 Grid itemGrid = new Grid();
+                itemGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 itemGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 itemGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 itemGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -983,28 +1524,45 @@ namespace SomewaysHub
                 };
                 Grid.SetColumn(dragHandle, 0);
 
+                System.Windows.Shapes.Ellipse watchedDot = new System.Windows.Shapes.Ellipse
+                {
+                    Width = 9,
+                    Height = 9,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 7, 0),
+                    Fill = new SolidColorBrush(statusColor),
+                    ToolTip = statusTooltip,
+                    Effect = new DropShadowEffect
+                    {
+                        BlurRadius = 6,
+                        Color = statusColor,
+                        Opacity = 0.85
+                    }
+                };
+                Grid.SetColumn(watchedDot, 1);
+
                 TextBlock playIcon = new TextBlock
                 {
                     Text = isCurrent ? "▶" : string.Format("{0}.", i + 1),
                     FontSize = 12,
                     FontWeight = FontWeights.Bold,
-                    Foreground = isCurrent ? new SolidColorBrush(Color.FromRgb(34, 197, 94)) : new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                    Foreground = isCurrent ? new SolidColorBrush(Color.FromRgb(234, 179, 8)) : (isWatched ? new SolidColorBrush(Color.FromRgb(239, 68, 68)) : new SolidColorBrush(Color.FromRgb(148, 163, 184))),
                     VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(0, 0, 8, 0)
                 };
-                Grid.SetColumn(playIcon, 1);
+                Grid.SetColumn(playIcon, 2);
 
                 TextBlock titleTb = new TextBlock
                 {
                     Text = nameOnly,
                     FontSize = 12,
                     FontWeight = isCurrent ? FontWeights.Bold : FontWeights.Normal,
-                    Foreground = Brushes.White,
+                    Foreground = isCurrent ? new SolidColorBrush(Color.FromRgb(254, 240, 138)) : Brushes.White,
                     VerticalAlignment = VerticalAlignment.Center,
                     TextTrimming = TextTrimming.CharacterEllipsis,
                     ToolTip = fullPath
                 };
-                Grid.SetColumn(titleTb, 2);
+                Grid.SetColumn(titleTb, 3);
 
                 StackPanel actionStack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
 
@@ -1019,7 +1577,7 @@ namespace SomewaysHub
                     actionStack.Children.Add(upBtn);
                 }
 
-                if (i < playlistFiles.Count - 1)
+                if (i < tab.Files.Count - 1)
                 {
                     Button downBtn = CreateLiquidIconButton("▼", "Move Down", 18, 18, 9);
                     downBtn.Click += (s, e) =>
@@ -1038,9 +1596,10 @@ namespace SomewaysHub
                 };
                 actionStack.Children.Add(delBtn);
 
-                Grid.SetColumn(actionStack, 3);
+                Grid.SetColumn(actionStack, 4);
 
                 itemGrid.Children.Add(dragHandle);
+                itemGrid.Children.Add(watchedDot);
                 itemGrid.Children.Add(playIcon);
                 itemGrid.Children.Add(titleTb);
                 itemGrid.Children.Add(actionStack);
@@ -1093,6 +1652,234 @@ namespace SomewaysHub
 
                 playlistItemsStack.Children.Add(itemCard);
             }
+        }
+
+        // ================================================================
+        // MULTI-PLAYLIST TAB MANAGEMENT
+        // ================================================================
+
+        private PlaylistTab GetActiveTab()
+        {
+            if (playlistTabs == null || playlistTabs.Count == 0) return null;
+            if (activeTabIndex < 0 || activeTabIndex >= playlistTabs.Count) activeTabIndex = 0;
+            return playlistTabs[activeTabIndex];
+        }
+
+        private void RefreshTabBar()
+        {
+            if (tabBarStack == null) return;
+            tabBarStack.Children.Clear();
+
+            for (int i = 0; i < playlistTabs.Count; i++)
+            {
+                int tabIdx = i;
+                bool isActive = (i == activeTabIndex);
+                PlaylistTab pTab = playlistTabs[i];
+
+                Border tabChip = new Border
+                {
+                    CornerRadius = new CornerRadius(9),
+                    Padding = new Thickness(10, 5, 6, 5),
+                    Margin = new Thickness(0, 0, 4, 0),
+                    Background = isActive
+                        ? new LinearGradientBrush(Color.FromArgb(210, 34, 197, 94), Color.FromArgb(210, 255, 140, 0), new Point(0, 0), new Point(1, 1))
+                        : new SolidColorBrush(Color.FromArgb(80, 40, 48, 70)),
+                    BorderBrush = isActive
+                        ? new SolidColorBrush(Color.FromArgb(200, 34, 197, 94))
+                        : new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
+                    BorderThickness = new Thickness(1),
+                    Cursor = Cursors.Hand,
+                    Effect = isActive ? new DropShadowEffect { BlurRadius = 10, Color = Color.FromRgb(34, 197, 94), Opacity = 0.65 } : null
+                };
+
+                StackPanel chipContent = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
+                TextBlock nameBlock = new TextBlock
+                {
+                    Text = pTab.Name,
+                    FontSize = 12,
+                    FontWeight = isActive ? FontWeights.Bold : FontWeights.Normal,
+                    Foreground = isActive ? Brushes.White : new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    MaxWidth = 90,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                };
+                chipContent.Children.Add(nameBlock);
+
+                if (playlistTabs.Count > 1)
+                {
+                    Button closeTabBtn = CreateLiquidIconButton("×", "Close Tab", 16, 16, 8);
+                    ((TextBlock)closeTabBtn.Content).FontSize = 12;
+                    closeTabBtn.Margin = new Thickness(4, 0, 0, 0);
+                    closeTabBtn.Click += (s, e) =>
+                    {
+                        e.Handled = true;
+                        CloseTab(tabIdx);
+                    };
+                    chipContent.Children.Add(closeTabBtn);
+                }
+
+                tabChip.Child = chipContent;
+
+                tabChip.MouseLeftButtonDown += (s, e) =>
+                {
+                    e.Handled = true;
+                    if (e.ClickCount >= 2)
+                        StartTabRename(tabIdx);
+                    else
+                        SwitchToTab(tabIdx);
+                };
+
+                // Right-click context menu
+                ContextMenu tabCtxMenu = new ContextMenu
+                {
+                    Background = new SolidColorBrush(Color.FromArgb(248, 14, 17, 28)),
+                    BorderBrush = new SolidColorBrush(Color.FromArgb(160, 34, 197, 94)),
+                    BorderThickness = new Thickness(1),
+                    Padding = new Thickness(0, 4, 0, 4),
+                    Effect = new DropShadowEffect { BlurRadius = 20, Color = Colors.Black, Opacity = 0.8 }
+                };
+
+                MenuItem renameMenuItem = new MenuItem
+                {
+                    Header = "✏   Rename Playlist",
+                    Foreground = Brushes.White,
+                    Background = Brushes.Transparent,
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    Padding = new Thickness(14, 7, 20, 7)
+                };
+                renameMenuItem.Click += (s, e) => StartTabRename(tabIdx);
+                tabCtxMenu.Items.Add(renameMenuItem);
+
+                if (playlistTabs.Count > 1)
+                {
+                    Separator sep = new Separator
+                    {
+                        Background = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
+                        Margin = new Thickness(8, 2, 8, 2)
+                    };
+                    tabCtxMenu.Items.Add(sep);
+
+                    MenuItem closeMenuItem = new MenuItem
+                    {
+                        Header = "✕   Close Tab",
+                        Foreground = new SolidColorBrush(Color.FromRgb(239, 68, 68)),
+                        Background = Brushes.Transparent,
+                        FontSize = 12,
+                        Padding = new Thickness(14, 7, 20, 7)
+                    };
+                    closeMenuItem.Click += (s, e) => CloseTab(tabIdx);
+                    tabCtxMenu.Items.Add(closeMenuItem);
+                }
+
+                tabChip.ContextMenu = tabCtxMenu;
+
+                tabBarStack.Children.Add(tabChip);
+            }
+
+            // "+" New Playlist button
+            Button addTabBtn = CreateLiquidIconButton("＋", "New Playlist Tab", 26, 26, 8);
+            addTabBtn.Margin = new Thickness(4, 0, 0, 0);
+            addTabBtn.Click += (s, e) => AddNewTab();
+            tabBarStack.Children.Add(addTabBtn);
+        }
+
+        private void SwitchToTab(int index)
+        {
+            if (index < 0 || index >= playlistTabs.Count) return;
+            activeTabIndex = index;
+            RefreshTabBar();
+            RefreshPlaylistUI();
+            SaveAllPlaylistsToDisk();
+            var switchedTab = GetActiveTab();
+            if (switchedTab != null) ShowToast("📋 " + switchedTab.Name);
+        }
+
+        private void AddNewTab()
+        {
+            int newNum = playlistTabs.Count + 1;
+            string newName = "Playlist " + newNum;
+            playlistTabs.Add(new PlaylistTab(newName));
+            activeTabIndex = playlistTabs.Count - 1;
+            RefreshTabBar();
+            RefreshPlaylistUI();
+            SaveAllPlaylistsToDisk();
+            ShowToast("✨ Created: " + newName);
+        }
+
+        private void CloseTab(int index)
+        {
+            if (playlistTabs.Count <= 1) return;
+            string closedName = playlistTabs[index].Name;
+            playlistTabs.RemoveAt(index);
+            if (activeTabIndex >= playlistTabs.Count)
+                activeTabIndex = playlistTabs.Count - 1;
+            else if (activeTabIndex > index)
+                activeTabIndex--;
+            if (playingTabIndex >= playlistTabs.Count)
+                playingTabIndex = activeTabIndex;
+            else if (playingTabIndex > index)
+                playingTabIndex--;
+            RefreshTabBar();
+            RefreshPlaylistUI();
+            SaveAllPlaylistsToDisk();
+            ShowToast("🗑 Closed: " + closedName);
+        }
+
+        private void StartTabRename(int tabIdx)
+        {
+            if (tabIdx < 0 || tabIdx >= playlistTabs.Count) return;
+            if (tabBarStack == null || tabIdx >= tabBarStack.Children.Count) return;
+
+            Border chip = tabBarStack.Children[tabIdx] as Border;
+            if (chip == null) return;
+            StackPanel chipContent = chip.Child as StackPanel;
+            if (chipContent == null || chipContent.Children.Count == 0) return;
+            TextBlock nameBlock = chipContent.Children[0] as TextBlock;
+            if (nameBlock == null) return;
+
+            PlaylistTab tabToRename = playlistTabs[tabIdx];
+
+            TextBox renameBox = new TextBox
+            {
+                Text = tabToRename.Name,
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                Background = new SolidColorBrush(Color.FromArgb(140, 14, 17, 28)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(34, 197, 94)),
+                BorderThickness = new Thickness(1),
+                Width = 85,
+                MaxLength = 30,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                Padding = new Thickness(3, 1, 3, 1),
+                CaretBrush = Brushes.White
+            };
+
+            chipContent.Children.RemoveAt(0);
+            chipContent.Children.Insert(0, renameBox);
+            renameBox.Focus();
+            renameBox.SelectAll();
+
+            bool committed = false;
+            Action commit = () =>
+            {
+                if (committed) return;
+                committed = true;
+                string newName = renameBox.Text.Trim();
+                if (!string.IsNullOrEmpty(newName))
+                    tabToRename.Name = newName;
+                SaveAllPlaylistsToDisk();
+                RefreshTabBar();
+                RefreshPlaylistUI();
+            };
+
+            renameBox.LostFocus += (s, e) => commit();
+            renameBox.KeyDown += (s, e) =>
+            {
+                if (e.Key == Key.Return || e.Key == Key.Escape) { e.Handled = true; commit(); }
+            };
         }
 
         private void ToggleSettingsPanel()
@@ -1153,30 +1940,99 @@ namespace SomewaysHub
 
             mediaElement.MediaOpened += MediaElement_MediaOpened;
             mediaElement.MediaEnded += (s, e) => {
-                if (currentPlaylistIndex >= 0 && currentPlaylistIndex < playlistFiles.Count - 1)
+                PlaylistTab playingTab = (playingTabIndex >= 0 && playingTabIndex < playlistTabs.Count)
+                    ? playlistTabs[playingTabIndex] : GetActiveTab();
+
+                if (playingTab != null && playingTab.CurrentIndex >= 0 && playingTab.CurrentIndex < playingTab.Files.Count)
                 {
-                    PlayPlaylistItem(currentPlaylistIndex + 1);
+                    string finishedFile = playingTab.Files[playingTab.CurrentIndex];
+                    if (!string.IsNullOrEmpty(finishedFile))
+                    {
+                        watchedFiles.Add(finishedFile);
+                        SaveWatchedToDisk();
+                    }
+                }
+
+                if (playingTab != null && playingTab.CurrentIndex >= 0 && playingTab.CurrentIndex < playingTab.Files.Count - 1)
+                {
+                    if (playingTabIndex != activeTabIndex)
+                    {
+                        activeTabIndex = playingTabIndex;
+                        RefreshTabBar();
+                    }
+                    PlayPlaylistItem(playingTab.CurrentIndex + 1);
                 }
                 else
                 {
                     isPlaying = false;
                     playPauseIcon.Text = "▶";
                     ShowControls();
+                    RefreshPlaylistUI();
                 }
             };
 
             seekSlider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler((s, e) => isDraggingSeeker = true));
-            seekSlider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler((s, e) => {
+            seekSlider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler((s, e) =>
+            {
                 isDraggingSeeker = false;
                 if (mediaElement.NaturalDuration.HasTimeSpan)
                 {
-                    mediaElement.Position = TimeSpan.FromSeconds(seekSlider.Value);
+                    CommitSeek(seekSlider.Value);
                 }
             }));
+
+            // Click-to-seek: jump instantly to wherever the user clicks on the bar
+            seekSlider.PreviewMouseLeftButtonDown += (s, e) =>
+            {
+                if (!mediaElement.NaturalDuration.HasTimeSpan) return;
+                double ratio = e.GetPosition(seekSlider).X / seekSlider.ActualWidth;
+                ratio = Math.Max(0, Math.Min(1, ratio));
+                double targetSeconds = ratio * seekSlider.Maximum;
+                seekSlider.Value = targetSeconds;
+                isDraggingSeeker = true;
+                QueueSeek(targetSeconds);  // debounced — won't flood decoder
+                e.Handled = false;
+            };
+
+            seekSlider.PreviewMouseLeftButtonUp += (s, e) =>
+            {
+                isDraggingSeeker = false;
+                // Flush whatever was queued when user releases
+                if (pendingSeekSeconds >= 0)
+                {
+                    seekDebounceTimer?.Stop();
+                    CommitSeek(pendingSeekSeconds);
+                    pendingSeekSeconds = -1;
+                }
+            };
+
+            // Real-time scrub while dragging — debounced, not every pixel
+            seekSlider.PreviewMouseMove += (s, e) =>
+            {
+                if (e.LeftButton == MouseButtonState.Pressed && mediaElement.NaturalDuration.HasTimeSpan)
+                {
+                    double ratio = e.GetPosition(seekSlider).X / seekSlider.ActualWidth;
+                    ratio = Math.Max(0, Math.Min(1, ratio));
+                    double targetSeconds = ratio * seekSlider.Maximum;
+                    seekSlider.Value = targetSeconds;  // update UI immediately
+                    QueueSeek(targetSeconds);          // commit to decoder after 150ms idle
+                }
+            };
         }
 
         private void InitTimer()
         {
+            // Seek debounce timer: waits 150ms of idle before flushing seek to decoder
+            seekDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+            seekDebounceTimer.Tick += (s, e) =>
+            {
+                seekDebounceTimer.Stop();
+                if (pendingSeekSeconds >= 0)
+                {
+                    CommitSeek(pendingSeekSeconds);
+                    pendingSeekSeconds = -1;
+                }
+            };
             timer = new DispatcherTimer();
             timer.Interval = TimeSpan.FromMilliseconds(250);
             timer.Tick += (s, e) =>
@@ -1290,15 +2146,51 @@ namespace SomewaysHub
             ShowControls();
         }
 
+        // Queues a seek to be committed after a short idle — prevents flooding the decoder
+        // during fast slider drags.
+        private void QueueSeek(double seconds)
+        {
+            pendingSeekSeconds = seconds;
+            seekDebounceTimer?.Stop();
+            seekDebounceTimer?.Start();
+        }
+
+        // The actual seek flush: Pause → Position → Play.
+        // This forces the audio/video decoder to fully resync at the new timestamp,
+        // eliminating the ghost-audio lag that occurs when only setting .Position.
+        private void CommitSeek(double seconds)
+        {
+            if (!mediaElement.NaturalDuration.HasTimeSpan) return;
+            TimeSpan ts = TimeSpan.FromSeconds(Math.Clamp(seconds, 0, mediaElement.NaturalDuration.TimeSpan.TotalSeconds));
+            bool wasPlaying = isPlaying;
+            mediaElement.Pause();
+            mediaElement.Position = ts;
+            if (wasPlaying) mediaElement.Play();
+            seekSlider.Value = ts.TotalSeconds;
+            timeCurrentText.Text = FormatTime(ts);
+        }
+
         private void SeekRelative(double seconds)
         {
             if (mediaElement.NaturalDuration.HasTimeSpan)
             {
-                TimeSpan newPos = mediaElement.Position.Add(TimeSpan.FromSeconds(seconds));
-                if (newPos < TimeSpan.Zero) newPos = TimeSpan.Zero;
-                if (newPos > mediaElement.NaturalDuration.TimeSpan) newPos = mediaElement.NaturalDuration.TimeSpan;
-                mediaElement.Position = newPos;
+                double newSecs = Math.Clamp(
+                    mediaElement.Position.TotalSeconds + seconds,
+                    0,
+                    mediaElement.NaturalDuration.TimeSpan.TotalSeconds);
+                CommitSeek(newSecs);
             }
+        }
+
+        private void UpdateSkipIntroTooltip()
+        {
+            if (forward135Btn == null) return;
+            int secs = (int)skipIntroDuration;
+            int m = secs / 60;
+            int s = secs % 60;
+            string label = m > 0 ? string.Format("Skip Intro: {0}:{1:D2} ({2}s) (>>)", m, s, secs)
+                                 : string.Format("Skip Intro: {0}s (>>)", secs);
+            forward135Btn.ToolTip = label;
         }
 
         private void CycleAspectMode()
@@ -1342,6 +2234,120 @@ namespace SomewaysHub
         }
 
         private double lastVolumeBeforeMute = 1.0;
+
+        private void UpdateVolumeUI(double val)
+        {
+            if (mediaElement == null || volumeSlider == null) return;
+
+            // WPF MediaElement.Volume is capped at 1.0 — push real gain through
+            // Windows CoreAudio SimpleAudioVolume on this process instead.
+            mediaElement.Volume = Math.Min(val, 1.0);
+            if (val > 1.0)
+                SetProcessAudioGain((float)(val / 5.0f)); // map 1–5 → 0.2–1.0 of process gain
+            else
+                SetProcessAudioGain((float)(val * 0.2f)); // map 0–1 → 0–0.2 of process gain (normal)
+
+            int percent = (int)Math.Round(val * 100);
+
+            if (val == 0)
+            {
+                mediaElement.IsMuted = true;
+                if (volIcon != null) volIcon.Text = "🔇";
+            }
+            else
+            {
+                mediaElement.IsMuted = false;
+                if (volIcon != null)
+                {
+                    if (val <= 0.5) volIcon.Text = "🔈";
+                    else if (val <= 1.0) volIcon.Text = "🔊";
+                    else volIcon.Text = "🚀";
+                }
+            }
+
+            Color greenColor = Color.FromRgb(34, 197, 94);
+            Color activeThumbColor;
+            Brush trackBrush;
+
+            if (val <= 1.0)
+            {
+                activeThumbColor = greenColor;
+                trackBrush = new SolidColorBrush(greenColor);
+            }
+            else
+            {
+                double t = Math.Min(1.0, (val - 1.0) / 4.0); // 1.0–5.0 → 0–1
+                byte r = (byte)(34 + (255 - 34) * t);
+                byte g = (byte)(197 + (140 - 197) * t);
+                byte b = (byte)(94 + (0 - 94) * t);
+                activeThumbColor = Color.FromRgb(r, g, b);
+
+                double greenStop = Math.Max(0.01, 1.0 / val);
+                LinearGradientBrush lgb = new LinearGradientBrush();
+                lgb.StartPoint = new Point(0, 0);
+                lgb.EndPoint = new Point(1, 0);
+                lgb.GradientStops.Add(new GradientStop(greenColor, 0.0));
+                lgb.GradientStops.Add(new GradientStop(greenColor, greenStop));
+                lgb.GradientStops.Add(new GradientStop(activeThumbColor, 1.0));
+                trackBrush = lgb;
+            }
+
+            if (volPercentText != null)
+            {
+                volPercentText.Text = $"{percent}%";
+                volPercentText.Foreground = new SolidColorBrush(activeThumbColor);
+            }
+
+            if (volBoostBtn != null)
+            {
+                if (val > 1.0)
+                {
+                    volBoostBtn.Background = new SolidColorBrush(Color.FromArgb(220, activeThumbColor.R, activeThumbColor.G, activeThumbColor.B));
+                    volBoostBtn.BorderBrush = new SolidColorBrush(activeThumbColor);
+                    volBoostBtn.Effect = new DropShadowEffect { BlurRadius = 12, Color = activeThumbColor, Opacity = 0.85 };
+                    volBoostBtn.Content = "🔥 BOOST";
+                }
+                else
+                {
+                    volBoostBtn.Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+                    volBoostBtn.BorderBrush = new SolidColorBrush(Color.FromArgb(80, 255, 255, 255));
+                    volBoostBtn.Effect = null;
+                    volBoostBtn.Content = "⚡ 200%";
+                }
+            }
+
+            ApplyCircularSliderStyle(volumeSlider, trackBrush, activeThumbColor, val > 1.0 ? 11 : 10);
+        }
+
+        private void SetVolume(double val)
+        {
+            if (volumeSlider == null) return;
+            val = Math.Clamp(Math.Round(val * 20.0) / 20.0, 0.0, 5.0);
+            volumeSlider.Value = val;
+
+            int percent = (int)Math.Round(val * 100);
+            if (val > 1.0)
+            {
+                ShowToast(val == 5.0 ? "🔥 500% MAX BOOST ENABLED" : $"🚀 Volume: {percent}% BOOSTED");
+            }
+            else
+            {
+                ShowToast($"🔊 Volume: {percent}%");
+            }
+        }
+
+        private void Toggle200PercentBoost()
+        {
+            if (volumeSlider == null) return;
+            if (volumeSlider.Value < 5.0)
+            {
+                SetVolume(5.0);
+            }
+            else
+            {
+                SetVolume(1.0);
+            }
+        }
 
         private void ToggleMute()
         {
@@ -1458,38 +2464,238 @@ namespace SomewaysHub
 
         private void MainWindow_KeyDown(object sender, KeyEventArgs e)
         {
-            switch (e.Key)
+            // If waiting for a rebind, capture the pressed key
+            if (currentlyRebinding != null)
             {
-                case Key.Space:
-                case Key.K:
-                    TogglePlayPause();
-                    break;
-                case Key.F:
-                    ToggleFullscreen();
-                    break;
-                case Key.Escape:
-                    if (isFullscreen) ToggleFullscreen();
-                    break;
-                case Key.A:
-                    CycleAspectMode();
-                    break;
-                case Key.M:
-                    ToggleMute();
-                    break;
-                case Key.Left:
-                    SeekRelative(-5);
-                    break;
-                case Key.Right:
-                    SeekRelative(5);
-                    break;
-                case Key.Up:
-                    volumeSlider.Value = Math.Min(1, volumeSlider.Value + 0.1);
-                    break;
-                case Key.Down:
-                    volumeSlider.Value = Math.Max(0, volumeSlider.Value - 0.1);
-                    break;
+                if (e.Key == Key.Escape)
+                {
+                    CancelRebinding();
+                }
+                else
+                {
+                    hotkeys[currentlyRebinding] = e.Key;
+                    if (hotkeyBtns.ContainsKey(currentlyRebinding))
+                        UpdateRebindBtnLabel(hotkeyBtns[currentlyRebinding], KeyToLabel(e.Key));
+                    CancelRebinding();
+                }
+                e.Handled = true;
+                return;
+            }
+
+            Key k = e.Key;
+            if (k == GetHotkey("Play / Pause"))                { TogglePlayPause(); }
+            else if (k == GetHotkey("Fullscreen"))             { ToggleFullscreen(); }
+            else if (k == Key.Escape && isFullscreen)          { ToggleFullscreen(); }
+            else if (k == GetHotkey("Aspect Ratio"))           { CycleAspectMode(); }
+            else if (k == GetHotkey("Mute"))                   { ToggleMute(); }
+            else if (k == GetHotkey("Seek Back 5s"))           { SeekRelative(-5); }
+            else if (k == GetHotkey("Seek Forward 5s"))        { SeekRelative(5); }
+            else if (k == GetHotkey("Volume Up"))              { SetVolume(volumeSlider.Value + 0.05); }
+            else if (k == GetHotkey("Volume Down"))            { SetVolume(volumeSlider.Value - 0.05); }
+            else if (k == GetHotkey("Toggle 200% Boost"))      { Toggle200PercentBoost(); }
+            else if (k == GetHotkey("Rewind 10s"))             { SeekRelative(-10); }
+            else if (k == GetHotkey("Forward 10s"))            { SeekRelative(10); }
+            else if (k == GetHotkey("Skip Intro (>>)"))        { SeekRelative(skipIntroDuration); }
+        }
+
+        private Key GetHotkey(string action)
+        {
+            Key k;
+            return (hotkeys != null && hotkeys.TryGetValue(action, out k)) ? k : Key.None;
+        }
+
+        private void InitHotkeys()
+        {
+            hotkeys = new System.Collections.Generic.Dictionary<string, Key>
+            {
+                { "Play / Pause",      Key.Space },
+                { "Fullscreen",        Key.F },
+                { "Aspect Ratio",      Key.A },
+                { "Mute",              Key.M },
+                { "Seek Back 5s",      Key.Left },
+                { "Seek Forward 5s",   Key.Right },
+                { "Volume Up",         Key.Up },
+                { "Volume Down",       Key.Down },
+                { "Toggle 200% Boost", Key.B },
+                { "Rewind 10s",        Key.OemComma },
+                { "Forward 10s",       Key.OemPeriod },
+                { "Skip Intro (>>)",   Key.OemCloseBrackets }
+            };
+        }
+
+        private Key GetDefaultKey(string action)
+        {
+            switch (action)
+            {
+                case "Play / Pause":    return Key.Space;
+                case "Fullscreen":      return Key.F;
+                case "Aspect Ratio":    return Key.A;
+                case "Mute":            return Key.M;
+                case "Seek Back 5s":    return Key.Left;
+                case "Seek Forward 5s": return Key.Right;
+                case "Volume Up":       return Key.Up;
+                case "Volume Down":     return Key.Down;
+                case "Toggle 200% Boost": return Key.B;
+                case "Rewind 10s":      return Key.OemComma;
+                case "Forward 10s":     return Key.OemPeriod;
+                case "Skip Intro (>>)": return Key.OemCloseBrackets;
+                default:                return Key.None;
             }
         }
+
+        private void ResetAllHotkeys()
+        {
+            InitHotkeys();
+            foreach (var pair in hotkeyBtns)
+            {
+                Key k = GetDefaultKey(pair.Key);
+                UpdateRebindBtnLabel(pair.Value, KeyToLabel(k));
+            }
+            CancelRebinding();
+        }
+
+        private void StartRebinding(string action)
+        {
+            // Cancel any previous
+            if (currentlyRebinding != null) CancelRebinding();
+            currentlyRebinding = action;
+            if (hotkeyBtns.ContainsKey(action))
+            {
+                Button btn = hotkeyBtns[action];
+                UpdateRebindBtnLabel(btn, "[ Press key... ]");
+                btn.Background = new SolidColorBrush(Color.FromArgb(180, 34, 197, 94));
+            }
+        }
+
+        private void CancelRebinding()
+        {
+            if (currentlyRebinding != null && hotkeyBtns.ContainsKey(currentlyRebinding))
+            {
+                Button btn = hotkeyBtns[currentlyRebinding];
+                Key k = hotkeys.ContainsKey(currentlyRebinding) ? hotkeys[currentlyRebinding] : Key.None;
+                UpdateRebindBtnLabel(btn, KeyToLabel(k));
+                btn.Background = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255));
+            }
+            currentlyRebinding = null;
+        }
+
+        private Button CreateRebindButton(string label)
+        {
+            Button btn = new Button
+            {
+                Content = label,
+                Width = 110,
+                Height = 26,
+                Foreground = Brushes.White,
+                FontSize = 11,
+                FontFamily = new FontFamily("Consolas, Courier New"),
+                Background = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
+                Cursor = Cursors.Hand,
+                HorizontalContentAlignment = HorizontalAlignment.Center
+            };
+
+            FrameworkElementFactory bdr = new FrameworkElementFactory(typeof(Border));
+            bdr.SetValue(Border.CornerRadiusProperty, new CornerRadius(7));
+            bdr.SetBinding(Border.BackgroundProperty, new System.Windows.Data.Binding("Background") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            bdr.SetValue(Border.BorderBrushProperty, new SolidColorBrush(Color.FromArgb(100, 255, 255, 255)));
+            bdr.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+
+            FrameworkElementFactory cp = new FrameworkElementFactory(typeof(ContentPresenter));
+            cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+            bdr.AppendChild(cp);
+
+            ControlTemplate tmpl = new ControlTemplate(typeof(Button));
+            tmpl.VisualTree = bdr;
+            btn.Template = tmpl;
+
+            return btn;
+        }
+
+        private void UpdateRebindBtnLabel(Button btn, string label)
+        {
+            btn.Content = label;
+        }
+
+        private string KeyToLabel(Key k)
+        {
+            switch (k)
+            {
+                case Key.Space:           return "Space";
+                case Key.Left:            return "\u2190";
+                case Key.Right:           return "\u2192";
+                case Key.Up:              return "\u2191";
+                case Key.Down:            return "\u2193";
+                case Key.Return:          return "Enter";
+                case Key.Tab:             return "Tab";
+                case Key.Back:            return "Backspace";
+                case Key.Delete:          return "Delete";
+                case Key.Escape:          return "Esc";
+                case Key.OemComma:        return ",";
+                case Key.OemPeriod:       return ".";
+                case Key.OemCloseBrackets:return "]";
+                case Key.OemOpenBrackets: return "[";
+                case Key.OemSemicolon:    return ";";
+                case Key.OemQuotes:       return "'";
+                case Key.OemMinus:        return "-";
+                case Key.OemPlus:         return "=";
+                case Key.OemQuestion:     return "/";
+                case Key.None:            return "(none)";
+                default:                  return k.ToString();
+            }
+        }
+
+        private void ApplyThinScrollbarStyle(ScrollViewer sv)
+        {
+            // XamlReader is the correct way to build templates with Track (which doesn't implement IAddChild)
+            string xaml =
+                "<ResourceDictionary" +
+                "    xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"" +
+                "    xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">" +
+                "  <Style TargetType=\"{x:Type ScrollBar}\">" +
+                "    <Setter Property=\"Width\" Value=\"6\"/>" +
+                "    <Setter Property=\"MinWidth\" Value=\"6\"/>" +
+                "    <Setter Property=\"Background\" Value=\"Transparent\"/>" +
+                "    <Setter Property=\"Template\">" +
+                "      <Setter.Value>" +
+                "        <ControlTemplate TargetType=\"{x:Type ScrollBar}\">" +
+                "          <Grid>" +
+                "            <Border CornerRadius=\"3\" Background=\"#18FFFFFF\" Margin=\"1,2\"/>" +
+                "            <Track Name=\"PART_Track\" IsDirectionReversed=\"True\">" +
+                "              <Track.DecreaseRepeatButton>" +
+                "                <RepeatButton Command=\"ScrollBar.PageUpCommand\" Opacity=\"0\" IsTabStop=\"False\" Focusable=\"False\"/>" +
+                "              </Track.DecreaseRepeatButton>" +
+                "              <Track.IncreaseRepeatButton>" +
+                "                <RepeatButton Command=\"ScrollBar.PageDownCommand\" Opacity=\"0\" IsTabStop=\"False\" Focusable=\"False\"/>" +
+                "              </Track.IncreaseRepeatButton>" +
+                "              <Track.Thumb>" +
+                "                <Thumb MinHeight=\"20\">" +
+                "                  <Thumb.Template>" +
+                "                    <ControlTemplate TargetType=\"{x:Type Thumb}\">" +
+                "                      <Border CornerRadius=\"3\" Margin=\"0,2\">" +
+                "                        <Border.Background>" +
+                "                          <LinearGradientBrush StartPoint=\"0,0\" EndPoint=\"0,1\">" +
+                "                            <GradientStop Color=\"#FF7800\" Offset=\"0\"/>" +
+                "                            <GradientStop Color=\"#22C55E\" Offset=\"1\"/>" +
+                "                          </LinearGradientBrush>" +
+                "                        </Border.Background>" +
+                "                      </Border>" +
+                "                    </ControlTemplate>" +
+                "                  </Thumb.Template>" +
+                "                </Thumb>" +
+                "              </Track.Thumb>" +
+                "            </Track>" +
+                "          </Grid>" +
+                "        </ControlTemplate>" +
+                "      </Setter.Value>" +
+                "    </Setter>" +
+                "  </Style>" +
+                "</ResourceDictionary>";
+
+            var rd = (ResourceDictionary)System.Windows.Markup.XamlReader.Parse(xaml);
+            sv.Resources.MergedDictionaries.Add(rd);
+        }
+
 
         private Button CreateLiquidPillButton(string text, Color startColor, Color endColor, double cornerRadius)
         {
@@ -1560,13 +2766,32 @@ namespace SomewaysHub
             return btn;
         }
 
-        private void ApplyCircularSliderStyle(Slider slider, Color trackFillColor, Color thumbColor, double thumbSize)
+        private void ApplyCircularSliderStyle(Slider slider, Brush trackFillBrush, Color thumbColor, double thumbSize)
         {
             try
             {
-                string hexFill = string.Format("#{0:X2}{1:X2}{2:X2}{3:X2}", trackFillColor.A, trackFillColor.R, trackFillColor.G, trackFillColor.B);
                 string hexThumb = string.Format("#{0:X2}{1:X2}{2:X2}{3:X2}", thumbColor.A, thumbColor.R, thumbColor.G, thumbColor.B);
                 double radius = thumbSize / 2.0;
+
+                string brushXaml;
+                if (trackFillBrush is SolidColorBrush sb)
+                {
+                    brushXaml = string.Format("<SolidColorBrush Color=\"#{0:X2}{1:X2}{2:X2}{3:X2}\"/>", sb.Color.A, sb.Color.R, sb.Color.G, sb.Color.B);
+                }
+                else if (trackFillBrush is LinearGradientBrush lgb)
+                {
+                    System.Text.StringBuilder sbXaml = new System.Text.StringBuilder("<LinearGradientBrush StartPoint=\"0,0\" EndPoint=\"1,0\">");
+                    foreach (var gs in lgb.GradientStops)
+                    {
+                        sbXaml.AppendFormat(System.Globalization.CultureInfo.InvariantCulture, "<GradientStop Color=\"#{0:X2}{1:X2}{2:X2}{3:X2}\" Offset=\"{4:F3}\"/>", gs.Color.A, gs.Color.R, gs.Color.G, gs.Color.B, gs.Offset);
+                    }
+                    sbXaml.Append("</LinearGradientBrush>");
+                    brushXaml = sbXaml.ToString();
+                }
+                else
+                {
+                    brushXaml = "<SolidColorBrush Color=\"#22C55E\"/>";
+                }
 
                 string xaml = string.Format(@"
                     <ControlTemplate xmlns=""http://schemas.microsoft.com/winfx/2006/xaml/presentation""
@@ -1579,7 +2804,11 @@ namespace SomewaysHub
                                     <RepeatButton Command=""Slider.DecreaseLarge"">
                                         <RepeatButton.Template>
                                             <ControlTemplate TargetType=""RepeatButton"">
-                                                <Border Height=""3"" Background=""{0}"" CornerRadius=""1.5"" VerticalAlignment=""Center""/>
+                                                <Border Height=""3"" CornerRadius=""1.5"" VerticalAlignment=""Center"">
+                                                    <Border.Background>
+                                                        {0}
+                                                    </Border.Background>
+                                                </Border>
                                             </ControlTemplate>
                                         </RepeatButton.Template>
                                     </RepeatButton>
@@ -1605,7 +2834,7 @@ namespace SomewaysHub
                                 </Track.Thumb>
                             </Track>
                         </Grid>
-                    </ControlTemplate>", hexFill, thumbSize, radius, hexThumb);
+                    </ControlTemplate>", brushXaml, thumbSize, radius, hexThumb);
 
                 slider.Template = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(xaml);
             }
@@ -1684,6 +2913,135 @@ namespace SomewaysHub
             if (ts.Hours > 0)
                 return string.Format("{0}:{1:D2}:{2:D2}", ts.Hours, ts.Minutes, ts.Seconds);
             return string.Format("{0:D2}:{1:D2}", ts.Minutes, ts.Seconds);
+        }
+
+        // ================================================================
+        // WINDOWS CORE AUDIO — PROCESS-LEVEL GAIN (real volume amplification)
+        // ================================================================
+        // Maps our 0–5x slider into a Windows per-app SimpleAudioVolume scalar
+        // so audio actually goes louder than WPF's hard-capped Volume=1.0.
+        private static void SetProcessAudioGain(float scalar)
+        {
+            try
+            {
+                scalar = Math.Clamp(scalar, 0f, 1f);
+                // Activate the device enumerator
+                var enumType = Type.GetTypeFromCLSID(new Guid("BCDE0395-E52F-467C-8E3D-C4579291692E"))!;
+                object enumObj = Activator.CreateInstance(enumType)!;
+                var enumerator = (IMMDeviceEnumerator)enumObj;
+                IMMDevice device;
+                enumerator.GetDefaultAudioEndpoint(0 /*eRender*/, 1 /*eMultimedia*/, out device);
+                object sessionManagerObj;
+                device.Activate(typeof(IAudioSessionManager2).GUID, 0, IntPtr.Zero, out sessionManagerObj);
+                var sessionManager = (IAudioSessionManager2)sessionManagerObj;
+                IAudioSessionEnumerator sessionEnum;
+                sessionManager.GetSessionEnumerator(out sessionEnum);
+                int count;
+                sessionEnum.GetCount(out count);
+                int thisPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                for (int i = 0; i < count; i++)
+                {
+                    IAudioSessionControl sessionCtrl;
+                    sessionEnum.GetSession(i, out sessionCtrl);
+                    var sessionCtrl2 = sessionCtrl as IAudioSessionControl2;
+                    if (sessionCtrl2 == null) continue;
+                    uint pid;
+                    sessionCtrl2.GetProcessId(out pid);
+                    if ((int)pid == thisPid)
+                    {
+                        var simpleVol = sessionCtrl as ISimpleAudioVolume;
+                        if (simpleVol != null)
+                        {
+                            Guid empty = Guid.Empty;
+                            simpleVol.SetMasterVolume(scalar, ref empty);
+                        }
+                    }
+                }
+            }
+            catch { /* silent fallback — volume stays at WPF level */ }
+        }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IMMDeviceEnumerator
+        {
+            int NotImpl1();
+            [System.Runtime.InteropServices.PreserveSig]
+            int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice);
+        }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IMMDevice
+        {
+            [System.Runtime.InteropServices.PreserveSig]
+            int Activate([System.Runtime.InteropServices.In] Guid iid, int dwClsCtx, IntPtr pActivationParams, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.IUnknown)] out object ppInterface);
+        }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IAudioSessionManager2
+        {
+            int NotImpl1();
+            int NotImpl2();
+            [System.Runtime.InteropServices.PreserveSig]
+            int GetSessionEnumerator(out IAudioSessionEnumerator sessionEnum);
+        }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IAudioSessionEnumerator
+        {
+            [System.Runtime.InteropServices.PreserveSig]
+            int GetCount(out int sessionCount);
+            [System.Runtime.InteropServices.PreserveSig]
+            int GetSession(int sessionCount, out IAudioSessionControl session);
+        }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("F4B1A599-7266-4319-A8CA-E70ACB11E8CD")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IAudioSessionControl { }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IAudioSessionControl2
+        {
+            int NotImpl1(); int NotImpl2(); int NotImpl3(); int NotImpl4();
+            int NotImpl5(); int NotImpl6(); int NotImpl7(); int NotImpl8();
+            [System.Runtime.InteropServices.PreserveSig]
+            int GetProcessId(out uint retvVal);
+        }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        private interface ISimpleAudioVolume
+        {
+            [System.Runtime.InteropServices.PreserveSig]
+            int SetMasterVolume(float fLevel, ref Guid eventContext);
+        }
+    }
+
+    // ====================================================================
+    // PLAYLIST TAB DATA MODEL
+    // ====================================================================
+    public class PlaylistTab
+    {
+        public string Name { get; set; }
+        public System.Collections.Generic.List<string> Files { get; set; }
+        public int CurrentIndex { get; set; }
+
+        public PlaylistTab(string name)
+        {
+            Name = name;
+            Files = new System.Collections.Generic.List<string>();
+            CurrentIndex = -1;
         }
     }
 }
